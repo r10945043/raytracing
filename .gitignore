@@ -2,6 +2,8 @@
 *.gch
 *.pch
 *.out
+*.png
+perf*
 raytracing
 use-models.h
 out.ppm
