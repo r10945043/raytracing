@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <omp.h>
+#include <pthread.h>
 
 #include "math-toolkit.h"
 #include "primitives.h"
@@ -453,50 +453,74 @@ static unsigned int ray_color(const point3 e, double t,
     return 1;
 }
 
-/* @param background_color this is not ambient light */
-void raytracing(uint8_t *pixels, color background_color,
-                rectangular_node rectangulars, sphere_node spheres,
-                light_node lights, const viewpoint *view,
-                int width, int height)
+void raytrace_thread(void *args)
 {
+    arg_t *params = (arg_t *) args;
     point3 u, v, w, d;
-    color object_color = { 0.0, 0.0, 0.0 };
+    color object_color = {0.0, 0.0, 0.0};
 
-    /* calculate u, v, w */
+    const viewpoint *view = params->view;
+    color back = {0.0, 0.1, 0.1};
+    uint8_t *pixels = params->pixels;
     calculateBasisVectors(u, v, w, view);
 
     idx_stack stk;
 
-    int factor = sqrt(SAMPLES);
-    #pragma omp parallel for num_threads(4)   \
-    private(stk), private(d),   \
-    private(object_color)
-    for (int j = 0; j < height; j++) {
-        for (int i = 0; i < width; i++) {
+    for (int j = params->st_j; j < 512; j += MAX_THREADS) {
+        for (int i = 0; i < 512; i++) {
             double r = 0, g = 0, b = 0;
-            /* MSAA */
             for (int s = 0; s < SAMPLES; s++) {
                 idx_stack_init(&stk);
                 rayConstruction(d, u, v, w,
-                                i * factor + s / factor,
-                                j * factor + s % factor,
+                                i * 2 + s / 2,
+                                j * 2 + s % 2,
                                 view,
-                                width * factor, height * factor);
-                if (ray_color(view->vrp, 0.0, d, &stk, rectangulars, spheres,
-                              lights, object_color,
+                                1024, 1024);
+                if (ray_color(view->vrp, 0.0, d, &stk, params->rectangulars,
+                              params->spheres, params->lights, object_color,
                               MAX_REFLECTION_BOUNCES)) {
                     r += object_color[0];
                     g += object_color[1];
                     b += object_color[2];
                 } else {
-                    r += background_color[0];
-                    g += background_color[1];
-                    b += background_color[2];
+                    r += back[0];
+                    g += back[1];
+                    b += back[2];
                 }
-                pixels[((i + (j * width)) * 3) + 0] = r * 255 / SAMPLES;
-                pixels[((i + (j * width)) * 3) + 1] = g * 255 / SAMPLES;
-                pixels[((i + (j * width)) * 3) + 2] = b * 255 / SAMPLES;
+
+                pixels[((i + (j * 512)) * 3) + 0] = r * 63.75;
+                pixels[((i + (j * 512)) * 3) + 1] = g * 63.75;
+                pixels[((i + (j * 512)) * 3) + 2] = b * 63.75;
             }
         }
     }
+
+}
+
+/**
+ * @param background_color this is not ambient light
+ * This function call raytrace_thread to perform
+ * multi-threaded raytracing.
+ */
+void raytracing(uint8_t *pixels, color background_color,
+                rectangular_node rectangulars, sphere_node spheres,
+                light_node lights, const viewpoint *view,
+                int width, int height)
+{
+    arg_t params[MAX_THREADS];
+    pthread_t threads[MAX_THREADS];
+
+    for (int i = 0; i < MAX_THREADS; i++) {
+        params[i].pixels = pixels;
+        params[i].lights = lights;
+        params[i].rectangulars = rectangulars;
+        params[i].spheres = spheres;
+        params[i].view = view;
+        params[i].st_j = i;
+
+        pthread_create(&threads[i], NULL, (void *) raytrace_thread, (void *) &params[i]);
+    }
+
+    for (int i = 0; i < MAX_THREADS; ++i)
+        pthread_join(threads[i], NULL);
 }
